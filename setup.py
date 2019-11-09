@@ -46,7 +46,7 @@ setup(
     author="Rod Morison",
     packages=get_packages("chatlette"),
     package_data={"chatlette": ["py.typed"]},
-    data_files=[("", ["LICENSE.md"])],
+    data_files=[("", ["LICENSE"])],
     extras_require={
         "full": [
         ]
