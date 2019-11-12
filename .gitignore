@@ -8,3 +8,7 @@ __pycache__/
 # Wing IDE
 *.wpr
 *.wpu
+
+# venv and setup artifacts
+Pipfile
+chatlette.egg-info

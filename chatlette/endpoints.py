@@ -15,7 +15,7 @@ class ChatWebSocketEndpoint(WebSocketEndpoint):
     redis_url = 'redis://localhost'
     redis_channel_prefix = 'chatlette'
     redis_channel_separator = '/'
-    allow_anonymous = False
+    accept_receive = False
 
     async def reader(self, channel: aioredis.pubsub.Channel, websocket: WebSocket) -> None:
         while await channel.wait_message():
@@ -27,45 +27,36 @@ class ChatWebSocketEndpoint(WebSocketEndpoint):
         return websocket.path_params.get('channel', 'channel-1')
 
     async def on_connect(self, websocket: WebSocket) -> None:
-        if not websocket.user.is_authenticated and not self.allow_anonymous:
-            await websocket.close(status.WS_1008_POLICY_VIOLATION)
-            log.warning(f"unauthenticated connection attempt")
-            return
         await super().on_connect(websocket)
-        self.username = websocket.user.username if websocket.user.is_authenticated else 'anonymous'
-        self.chatname = None
+        if not websocket.user.is_authenticated:
+            await websocket.close(status.WS_1008_POLICY_VIOLATION)
+            log.warning(f"closing unauthenticated connection")
+            return
+        self.accept_receive = True
+        self.user = websocket.user
         self.channel_name = self.get_channel_name(websocket)
         self.redis_channel_name = self.redis_channel_separator.join([self.redis_channel_prefix, self.channel_name])
         self.redis_pub = await aioredis.create_redis(self.redis_url)
         self.redis_sub = await aioredis.create_redis(self.redis_url)
         self.redis_sub_channel = (await self.redis_sub.subscribe(self.redis_channel_name))[0]
         asyncio.get_running_loop().create_task(self.reader(self.redis_sub_channel, websocket))
-        log.info(f"chat connect on channel {self.channel_name} by {self.username}")
+        log.info(f"chat connect on channel {self.channel_name} by {self.user.username}")
 
     async def on_receive(self, websocket: WebSocket, data: typing.Any) -> None:
+        if not self.accept_receive:
+            log.warning(f"on_receive: {data} but not on_receive not allowed")
+            return
+        log.info(f"on_receive: {data}")
         action = data.get('action')
         content = data.get('content')
-        response = {'channel': self.channel_name,
-                    'username': self.username,
-                    'action': data.get('action'),
-                    }
-        if action == 'new_user':
-            self.chatname = content['chatname']
-            response = { 'action': action,
-                         'chatname': self.chatname,
-                         'content': content,
-                        }
-            await self.redis_pub.publish_json(self.redis_channel_name, response)
-        elif action == 'send_message':
-            if self.chatname is None:
-                log.error(f"action=send_message on channel {self.channel_name} by {self.username}"
-                          " did not establish a chatname")
-                return
-            response = { 'action': action,
-                         'chatname': self.chatname,
-                         'content': content,
-                        }
-            await self.redis_pub.publish_json(self.redis_channel_name, response)
+        try:            
+            action_func = getattr(self, f'action_{action}')
+        except AttributeError:
+            raise NotImplementedError(f"action_{action} not implemented")
+        await action_func(content)
+            
+    async def publish_all(self, response: typing.Any) -> None:
+        await self.redis_pub.publish_json(self.redis_channel_name, response)
 
     async def on_disconnect(self, websocket: WebSocket, close_code: int):
         await super().on_disconnect(websocket, close_code)
